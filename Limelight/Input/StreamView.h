@@ -32,6 +32,11 @@
 
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
+
+// iPhone mouse (through AssistiveTouch), done as Madeira does it: the PC's pointer
+// follows AssistiveTouch's. Main thread. YES when the motion was taken.
++ (BOOL) phoneMouseMovedX:(float)deltaX y:(float)deltaY;
++ (void) phoneMouseButton:(BOOL)pressed;
 #endif
 
 @end

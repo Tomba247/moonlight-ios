@@ -17,6 +17,38 @@
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
+#if !TARGET_OS_TV
+// MARK: iPhone mouse through AssistiveTouch
+//
+// On iPhone a mouse reaches an app only through AssistiveTouch, whose own pointer
+// stays on screen and can't be hidden or locked. Moved by relative motion, the PC's
+// pointer (with Windows' acceleration) drifted away from it, so two pointers showed.
+// Here the PC's pointer is put exactly where AssistiveTouch's is reckoned to be: the
+// mouse's own motion one to one in screen points, clamped to the screen's edges as
+// AssistiveTouch's pointer is, so the two meet again at the edges. AssistiveTouch's
+// copies of clicks (a tap with no contact patch, or within 50 ms of a button) are kept
+// from the touch handlers, as Madeira does; when one arrives it also says exactly where
+// the pointer is. Off: defaults write "phoneMouseFollowAT" NO; scale: "phoneMouseGain".
+
+static __weak StreamView* gPhoneMouseView;
+static CGPoint gPhoneReckoned;
+static BOOL gPhoneReckonedValid;
+static CFTimeInterval gPhoneLastMotion, gPhoneLastButton;
+static int gPhoneButtonsHeld;
+static NSMutableSet<UITouch*>* gPhoneDroppedTouches;
+
+static BOOL PhoneMouseEnabled(void) {
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:@"phoneMouseFollowAT"];
+    return v == nil ? YES : [v boolValue];
+}
+
+static double PhoneMouseGain(void) {
+    double g = [NSUserDefaults.standardUserDefaults doubleForKey:@"phoneMouseGain"];
+    return (g > 0.05 && g < 20) ? g : 1.0;
+}
+#endif
+
 @implementation StreamView {
     OnScreenControls* onScreenControls;
     
@@ -46,10 +78,70 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     NSDictionary<NSString *, NSNumber *> *dictCodes;
 }
 
+#if !TARGET_OS_TV
+- (void) sendPhoneMousePosition {
+    CGPoint p = [self convertPoint:gPhoneReckoned fromView:nil];
+    CGPoint n = [self adjustCoordinatesForVideoArea:p];
+    CGSize s = [self getVideoAreaSize];
+    LiSendMousePositionEvent(n.x, n.y, s.width, s.height);
+}
+
++ (BOOL) phoneMouseMovedX:(float)deltaX y:(float)deltaY {
+    if (!PhoneMouseEnabled()) return NO;
+    StreamView* view = gPhoneMouseView;
+    UIWindow* window = view.window;
+    if (view == nil || window == nil) return NO;
+    gPhoneLastMotion = CACurrentMediaTime();
+    CGRect b = window.bounds;
+    if (!gPhoneReckonedValid) {
+        gPhoneReckoned = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
+        gPhoneReckonedValid = YES;
+        Log(LOG_I, @"iPhone mouse: the PC's pointer follows AssistiveTouch's");
+    }
+    double g = PhoneMouseGain();
+    // GameController's Y runs upward; the screen's runs down.
+    gPhoneReckoned.x = MIN(MAX(gPhoneReckoned.x + deltaX * g, CGRectGetMinX(b)), CGRectGetMaxX(b) - 1);
+    gPhoneReckoned.y = MIN(MAX(gPhoneReckoned.y - deltaY * g, CGRectGetMinY(b)), CGRectGetMaxY(b) - 1);
+    [view sendPhoneMousePosition];
+    return YES;
+}
+
++ (void) phoneMouseButton:(BOOL)pressed {
+    gPhoneLastButton = CACurrentMediaTime();
+    gPhoneButtonsHeld = MAX(0, gPhoneButtonsHeld + (pressed ? 1 : -1));
+}
+
+// YES when every touch is AssistiveTouch's copy of a click (and so must not reach the touch handlers).
+- (BOOL) dropPhoneMouseTouches:(NSSet*)touches began:(BOOL)began ended:(BOOL)ended {
+    if (!PhoneMouseEnabled()) return NO;
+    if (gPhoneDroppedTouches == nil) gPhoneDroppedTouches = [NSMutableSet set];
+    BOOL all = touches.count > 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    for (UITouch* t in touches) {
+        if (began && t.type == UITouchTypeDirect && now - gPhoneLastMotion < 2.0 &&
+            (t.majorRadius < 1.0 || fabs(now - gPhoneLastButton) < 0.050)) {
+            [gPhoneDroppedTouches addObject:t];
+            // It is at AssistiveTouch's pointer: that is exactly where the pointer is.
+            if (gPhoneButtonsHeld == 0) {
+                gPhoneReckoned = [t locationInView:nil];
+                gPhoneReckonedValid = YES;
+                [self sendPhoneMousePosition];
+            }
+        }
+        if (![gPhoneDroppedTouches containsObject:t]) all = NO;
+        if (ended) [gPhoneDroppedTouches removeObject:t];
+    }
+    return all;
+}
+#endif
+
 - (void) setupStreamView:(ControllerSupport*)controllerSupport
      interactionDelegate:(id<UserInteractionDelegate>)interactionDelegate
                   config:(StreamConfiguration*)streamConfig {
     self->interactionDelegate = interactionDelegate;
+#if !TARGET_OS_TV
+    gPhoneMouseView = self;
+#endif
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
@@ -319,6 +411,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #endif
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+#if !TARGET_OS_TV
+    if ([self dropPhoneMouseTouches:touches began:YES ended:NO]) {
+        return;
+    }
+#endif
+
     if ([self handleMouseButtonEvent:BUTTON_ACTION_PRESS
                           forTouches:touches
                            withEvent:event]) {
@@ -510,6 +608,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
 #if !TARGET_OS_TV
+    if ([self dropPhoneMouseTouches:touches began:NO ended:NO]) {
+        return;
+    }
+#endif
+
+#if !TARGET_OS_TV
     if (@available(iOS 13.4, *)) {
         for (UITouch* touch in touches) {
             if (touch.type == UITouchTypePencil) {
@@ -586,6 +690,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+#if !TARGET_OS_TV
+    if ([self dropPhoneMouseTouches:touches began:NO ended:YES]) {
+        return;
+    }
+#endif
+
     if ([self handleMouseButtonEvent:BUTTON_ACTION_RELEASE
                           forTouches:touches
                            withEvent:event]) {
@@ -615,6 +725,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+#if !TARGET_OS_TV
+    if ([self dropPhoneMouseTouches:touches began:NO ended:YES]) {
+        return;
+    }
+#endif
+
     [touchHandler touchesCancelled:touches withEvent:event];
     [self handleMouseButtonEvent:BUTTON_ACTION_RELEASE
                       forTouches:touches

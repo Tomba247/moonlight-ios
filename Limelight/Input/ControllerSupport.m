@@ -12,6 +12,9 @@
 #import "OnScreenControls.h"
 
 #import "DataManager.h"
+#if !TARGET_OS_TV
+#import "StreamView.h"
+#endif
 #include "Limelight.h"
 
 @import GameController;
@@ -848,6 +851,11 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(void) registerMouseCallbacks:(GCMouse*) mouse API_AVAILABLE(ios(14.0)) {
     mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput * _Nonnull mouse, float deltaX, float deltaY) {
+#if !TARGET_OS_TV
+        if ([StreamView phoneMouseMovedX:deltaX y:deltaY]) {
+            return;
+        }
+#endif
         self->accumulatedDeltaX += deltaX / MOUSE_SPEED_DIVISOR;
         self->accumulatedDeltaY += -deltaY / MOUSE_SPEED_DIVISOR;
         
@@ -863,12 +871,21 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     };
     
     mouse.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+#if !TARGET_OS_TV
+        [StreamView phoneMouseButton:pressed];
+#endif
         LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_LEFT);
     };
     mouse.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+#if !TARGET_OS_TV
+        [StreamView phoneMouseButton:pressed];
+#endif
         LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_MIDDLE);
     };
     mouse.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput * _Nonnull button, float value, BOOL pressed) {
+#if !TARGET_OS_TV
+        [StreamView phoneMouseButton:pressed];
+#endif
         LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
     };
     

@@ -1,0 +1,45 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [ phone-mouse ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download iOS platform
+        run: xcodebuild -downloadPlatform iOS
+
+      - name: Build (unsigned, for sideloading)
+        run: |
+          xcodebuild -project Moonlight.xcodeproj -scheme Moonlight -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.moonlight-stream.Moonlight.phonemouse \
+            build
+
+      - name: Package IPA
+        run: |
+          app=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          mkdir -p Payload && cp -R "$app" Payload/
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Moonlight Mouse" Payload/*.app/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Moonlight Mouse" Payload/*.app/Info.plist
+          zip -qry Moonlight.ipa Payload
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="phone-mouse-${{ github.run_number }}"
+          gh release create "$tag" Moonlight.ipa --repo "${{ github.repository }}" --prerelease \
+            --title "Moonlight Mouse ${{ github.run_number }}" \
+            --notes "Moonlight for iPhone with the PC's pointer following AssistiveTouch's (Madeira's way). Commit ${{ github.sha }}."
