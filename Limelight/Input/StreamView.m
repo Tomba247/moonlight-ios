@@ -14,6 +14,8 @@
 #import "RelativeTouchHandler.h"
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
+#import <objc/runtime.h>
+#import <objc/message.h>
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -45,6 +47,38 @@ static BOOL PhoneMouseEnabled(void) {
 static double PhoneMouseGain(void) {
     double g = [NSUserDefaults.standardUserDefaults doubleForKey:@"phoneMouseGain"];
     return (g > 0.05 && g < 20) ? g : 1.0;
+}
+
+static CFTimeInterval gPhoneLastHover;
+
+// Madeira's PhonePointer (its MADEIRA_PHONE_HOVER switch): on iPhone UIKit leaves a pointer
+// interaction's drivers detached, so hover never arrives; attaching them after UIKit's own
+// update, as on iPad, makes hover report where AssistiveTouch's pointer is.
+static IMP gPhoneUpdateInteractionOrig;
+static void PhoneUpdateInteractionIsEnabled(id self, SEL _cmd) {
+    ((void (*)(id, SEL))gPhoneUpdateInteractionOrig)(self, _cmd);
+    UIPointerInteraction *interaction = self;
+    UIView *view = interaction.view;
+    if (!interaction.enabled || view == nil) return;
+    NSArray *drivers = nil;
+    if ([interaction respondsToSelector:NSSelectorFromString(@"drivers")]) drivers = [interaction valueForKey:@"drivers"];
+    else if ([interaction respondsToSelector:NSSelectorFromString(@"driver")]) {
+        id one = [interaction valueForKey:@"driver"];
+        drivers = one ? @[one] : nil;
+    }
+    for (id d in drivers) {
+        if ([d respondsToSelector:@selector(setView:)]) ((void (*)(id, SEL, id))objc_msgSend)(d, @selector(setView:), view);
+    }
+}
+
+static void PhonePointerInstall(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (!PhoneMouseEnabled()) return;
+        Method m = class_getInstanceMethod(UIPointerInteraction.class, NSSelectorFromString(@"_updateInteractionIsEnabled"));
+        if (m) gPhoneUpdateInteractionOrig = method_setImplementation(m, (IMP)PhoneUpdateInteractionIsEnabled);
+        Log(LOG_I, @"iPhone mouse: phone pointer hover %s", m ? "installed" : "unavailable");
+    });
 }
 #endif
 
@@ -85,12 +119,24 @@ static double PhoneMouseGain(void) {
     LiSendMousePositionEvent(n.x, n.y, s.width, s.height);
 }
 
+// Where iOS says AssistiveTouch's pointer is: the PC's pointer goes exactly there.
+- (void) phoneMouseHovered:(UIHoverGestureRecognizer*)g API_AVAILABLE(ios(13.0)) {
+    if (g.state != UIGestureRecognizerStateBegan && g.state != UIGestureRecognizerStateChanged) return;
+    if (!PhoneMouseEnabled()) return;
+    gPhoneLastHover = CACurrentMediaTime();
+    gPhoneReckoned = [g locationInView:nil];
+    gPhoneReckonedValid = YES;
+    [self sendPhoneMousePosition];
+}
+
 + (BOOL) phoneMouseMovedX:(float)deltaX y:(float)deltaY {
     if (!PhoneMouseEnabled()) return NO;
     StreamView* view = gPhoneMouseView;
     UIWindow* window = view.window;
     if (view == nil || window == nil) return NO;
     gPhoneLastMotion = CACurrentMediaTime();
+    // While iOS reports the pointer's place (hover), that alone moves the PC's pointer.
+    if (gPhoneLastMotion - gPhoneLastHover < 0.25) return YES;
     CGRect b = window.bounds;
     if (!gPhoneReckonedValid) {
         gPhoneReckoned = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
@@ -180,7 +226,12 @@ static double PhoneMouseGain(void) {
     // mice correctly, but UIKit does. We will register for both and ignore UIKit
     // events if a GCMouse is connected.
     if (@available(iOS 13.4, *)) {
+        PhonePointerInstall();
         [self addInteraction:[[UIPointerInteraction alloc] initWithDelegate:self]];
+        if (PhoneMouseEnabled()) {
+            UIHoverGestureRecognizer *mouseHover = [[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(phoneMouseHovered:)];
+            [self addGestureRecognizer:mouseHover];
+        }
         
         UIPanGestureRecognizer *discreteMouseWheelRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(mouseWheelMovedDiscrete:)];
         discreteMouseWheelRecognizer.maximumNumberOfTouches = 0;
@@ -797,6 +848,10 @@ static double PhoneMouseGain(void) {
 }
 
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region  API_AVAILABLE(ios(13.4)) {
+#if !TARGET_OS_TV
+    // iPhone: AssistiveTouch's pointer is the one the user follows, so it stays shown
+    if (PhoneMouseEnabled()) return nil;
+#endif
     // Always hide the mouse cursor over our stream view
     return [UIPointerStyle hiddenPointerStyle];
 }
