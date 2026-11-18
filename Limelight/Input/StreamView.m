@@ -27,8 +27,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 // mouse's own motion one to one in screen points, clamped to the screen's edges as
 // AssistiveTouch's pointer is, so the two meet again at the edges. AssistiveTouch's
 // copies of clicks (a tap with no contact patch, or within 50 ms of a button) are kept
-// from the touch handlers, as Madeira does; when one arrives it also says exactly where
-// the pointer is. Off: defaults write "phoneMouseFollowAT" NO; scale: "phoneMouseGain".
+// from the touch handlers, as Madeira does. Off: defaults write "phoneMouseFollowAT" NO; scale: "phoneMouseGain".
 
 static __weak StreamView* gPhoneMouseView;
 static CGPoint gPhoneReckoned;
@@ -120,13 +119,9 @@ static double PhoneMouseGain(void) {
     for (UITouch* t in touches) {
         if (began && t.type == UITouchTypeDirect && now - gPhoneLastMotion < 2.0 &&
             (t.majorRadius < 1.0 || fabs(now - gPhoneLastButton) < 0.050)) {
+            // Dropped, nothing more, as Madeira does: the click itself already came from GameController, and moving
+            // the pointer to the tap made it jump at each click.
             [gPhoneDroppedTouches addObject:t];
-            // It is at AssistiveTouch's pointer: that is exactly where the pointer is.
-            if (gPhoneButtonsHeld == 0) {
-                gPhoneReckoned = [t locationInView:nil];
-                gPhoneReckonedValid = YES;
-                [self sendPhoneMousePosition];
-            }
         }
         if (![gPhoneDroppedTouches containsObject:t]) all = NO;
         if (ended) [gPhoneDroppedTouches removeObject:t];
